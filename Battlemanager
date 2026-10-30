@@ -124,7 +124,28 @@ public partial class BattleManager : Node
 
     public override void _Process(double delta)
     {
-        // 2. Aquí escucharemos la ventana de tiempo del Parry frame a frame más adelante
+        // Si la ventana de parry está abierta, controlamos el cronómetro y la tecla
+        if (ventanaParryActiva)
+        {
+            tiempoVentanaParry -= (float)delta;
+
+            // Si el jugador presiona la acción de parry a tiempo (asegúrate de crear "parry" en el Input Map de Godot)
+            if (Input.IsActionJustPressed("parry"))
+            {
+                ventanaParryActiva = false;
+                GD.Print($"✨ ¡PARRY LOGRADO A TIEMPO por {objetivoActual.nombre}!");
+                
+                // Llamamos a la función que otorga el buff global según su rol
+                OtorgarBuffPorParry(objetivoActual);
+            }
+
+            // Si el cronómetro llega a 0, la ventana se cierra y el parry falla
+            if (tiempoVentanaParry <= 0.0f)
+            {
+                ventanaParryActiva = false;
+                GD.Print("❌ Ventana de Parry expirada. El ataque impactará normalmente.");
+            }
+        }
     }
 
     // ==========================================
@@ -277,5 +298,92 @@ public partial class BattleManager : Node
                 GD.Print($"✨ [{combatienteActual.nombre}] se ha recuperado de su estado alterado y vuelve a la normalidad.");
             }
         }
+    }
+// ==========================================
+    // 6. BUCLE PRINCIPAL DE TURNOS Y ACCIÓN
+    // ==========================================
+    private void AvanzarTurno()
+    {
+        if (ordenDeTurnos.Count == 0) return;
+
+        // Obtenemos al combatiente al que le toca según la iniciativa
+        Combatiente combatienteActual = ordenDeTurnos[indiceTurnoActual];
+
+        // Si está muerto, saltamos su turno automáticamente
+        if (!combatienteActual.EstaVivo())
+        {
+            GD.Print($"💀 [{combatienteActual.nombre}] está derrotado y se salta su turno.");
+            SiguienteTurnoIndice();
+            AvanzarTurno(); // Salta al siguiente de forma recursiva
+            return;
+        }
+
+        // Ejecutamos la fase de inicio de turno (buffs y estados alterados)
+        ProcesarInicioTurno(combatienteActual);
+
+        // Si está bajo el efecto de Sueño ("01"), pierde el turno
+        if (combatienteActual.estadoActualID == "01" && combatienteActual.turnosEstadoRestantes > 0)
+        {
+            GD.Print($"💤 [{combatienteActual.nombre}] está dormido y pierde su turno.");
+            SiguienteTurnoIndice();
+            return;
+        }
+
+        // Dependiendo de quién sea, abrimos su turno correspondiente
+        if (combatienteActual.esJugador)
+        {
+            IniciarTurnoJugador(combatienteActual);
+        }
+        else
+        {
+            IniciarTurnoEnemigo(combatienteActual);
+        }
+    }
+
+    private void SiguienteTurnoIndice()
+    {
+        indiceTurnoActual = (indiceTurnoActual + 1) % ordenDeTurnos.Count;
+    }
+
+    private void IniciarTurnoJugador(Combatiente jugador)
+    {
+        GD.Print($"🎮 [TURNO JUGADOR] Es el turno de {jugador.nombre}. Esperando comando de UI...");
+        // Aquí más adelante conectarás los botones de la interfaz (Atacar, Habilidad, etc.)
+    }
+
+    private void IniciarTurnoEnemigo(Combatiente enemigo)
+    {
+        GD.Print($"👾 [TURNO ENEMIGO] Es el turno de {enemigo.nombre}. Ejecutando IA...");
+        // Aquí la inteligencia artificial del enemigo decidirá a quién atacar
+    }
+// ==========================================
+    // 7. LÓGICA DE ATAQUE, EVASIÓN Y CRÍTICO
+    // ==========================================
+    private void EjecutarAtaque(Combatiente atacante, Combatiente objetivo, int dañoBase)
+    {
+        // A. COMPROBAR EVASIÓN
+        // Tiramos un dado virtual entre 0.0 y 1.0 (0% a 100%)
+        float tiradaEvasion = (float)rand.NextDouble();
+
+        // Si la tirada es menor o igual a la evasión del objetivo, ¡esquiva!
+        if (tiradaEvasion <= objetivo.stats.evasion)
+        {
+            GD.Print($"💨 ¡FALLO! [{objetivo.nombre}] ha esquivado ágilmente el ataque de [{atacante.nombre}].");
+            return; // El ataque se anula por completo
+        }
+
+        // B. COMPROBAR GOLPE CRÍTICO
+        float tiradaCritico = (float)rand.NextDouble();
+        bool esCritico = tiradaCritico <= atacante.stats.ratioCritico;
+        int dañoFinal = dañoBase;
+
+        if (esCritico)
+        {
+            dañoFinal = Mathf.RoundToInt(dañoBase * 1.5f); // Multiplicador de crítico 1.5x
+            GD.Print($"🔥 ¡GOLPE CRÍTICO! [{atacante.nombre}] inflige daño crítico.");
+        }
+
+        // C. APLICAR DAÑO EFECTIVO
+        objetivo.RecibirDaño(dañoFinal);
     }
 }
