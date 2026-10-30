@@ -1,0 +1,281 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+// ==========================================
+// 1. ESTRUCTURAS DE DATOS DE LOS COMBATIENTES
+// ==========================================
+public struct Estadisticas
+{
+    public int hpActual, hpMax;
+    public int pmActual, pmMax;
+    public int ataqueFisico, defensaFisica;
+    public int ataqueMagico, defensaMagica;
+    public int velocidad;
+    public float evasion;        // Ej: 0.15 (15%)
+    public float ratioCritico;   // Ej: 0.20 (20%)
+
+    // Diccionario de resistencias por ID de estado ("01" = Sueño, "02" = Quemadura, etc.)
+    public Dictionary<string, float> resistenciasEstados;
+}
+
+public class Buff
+{
+    public string tipoStat;     
+    public float valorAumento;  
+    public int turnosRestantes; 
+
+    public Buff(string tipo, float valor, int turnos)
+    {
+        tipoStat = tipo;
+        valorAumento = valor;
+        turnosRestantes = turnos;
+    }
+}
+
+public class Combatiente
+{
+    public string nombre;
+    public Estadisticas stats;
+    public bool esJugador;
+    
+    // Control de estados alterados por ID ("00" = Normal, "01" = Sueño, etc.)
+    public string estadoActualID = "00";
+    public int turnosEstadoRestantes = 0;
+
+    // Lista de buffs activos en este personaje
+    public List<Buff> buffsActivos = new List<Buff>();
+
+    public bool EstaVivo() => stats.hpActual > 0;
+
+    public void RecibirDaño(int daño)
+    {
+        stats.hpActual -= daño;
+        if (stats.hpActual < 0) stats.hpActual = 0;
+        GD.Print($"💥 [{nombre}] recibe {daño} de daño. HP restante: {stats.hpActual}/{stats.hpMax}");
+    }
+
+    // Regla de reescritura de buffs (sin acumular valor, refresca a 3 turnos)
+    public void AplicarBuff(Buff nuevoBuff)
+    {
+        bool buffEncontrado = false;
+        foreach (var buff in buffsActivos)
+        {
+            if (buff.tipoStat == nuevoBuff.tipoStat)
+            {
+                buff.turnosRestantes = nuevoBuff.turnosRestantes;
+                buff.valorAumento = nuevoBuff.valorAumento;
+                buffEncontrado = true;
+                GD.Print($"🔄 [{nombre}] Buff de {buff.tipoStat} reescrito y restablecido a 3 turnos.");
+                break;
+            }
+        }
+
+        if (!buffEncontrado)
+        {
+            buffsActivos.Add(nuevoBuff);
+            GD.Print($"✨ [{nombre}] Recibe buff de {buff.tipoStat} por {nuevoBuff.turnosRestantes} turnos.");
+        }
+    }
+
+    // Descuenta los turnos de los buffs al iniciar su turno
+    public void DecrementarTurnosBuffs()
+    {
+        for (int i = buffsActivos.Count - 1; i >= 0; i--)
+        {
+            buffsActivos[i].turnosRestantes--;
+            GD.Print($"⏱️ [{nombre}] Buff {buffsActivos[i].tipoStat}: {buffsActivos[i].turnosRestantes} turnos restantes.");
+
+            if (buffsActivos[i].turnosRestantes <= 0)
+            {
+                GD.Print($"❌ [{nombre}] El buff de {buffsActivos[i].tipoStat} expiró.");
+                buffsActivos.RemoveAt(i);
+            }
+        }
+    }
+}
+
+// ==========================================
+// 2. CLASE BATTLE MANAGER (Orquestador 4v4)
+// ==========================================
+public partial class BattleManager : Node
+{
+    // --- LISTAS DEL 4v4 Y CONTROL ---
+    private List<Combatiente> jugadores = new List<Combatiente>();
+    private List<Combatiente> enemigos = new List<Combatiente>();
+    private List<Combatiente> ordenDeTurnos = new List<Combatiente>();
+    
+    private int indiceTurnoActual = 0;
+
+    // Control de Parry
+    private bool ventanaParryActiva = false;
+    private float tiempoVentanaParry = 0.0f;
+    private Combatiente atacanteActual;
+    private Combatiente objetivoActual;
+
+    private Random rand = new Random();
+
+    // --- CICLO DE VIDA DE GODOT ---
+    public override void _Ready()
+    {
+        // 1. Al iniciar la escena, cargamos y asignamos todos los datos reales externos
+        CargarYAsignarDatosExternos();
+    }
+
+    public override void _Process(double delta)
+    {
+        // 2. Aquí escucharemos la ventana de tiempo del Parry frame a frame más adelante
+    }
+
+    // ==========================================
+    // 3. FUNCIÓN REAL DE CARGA Y ASIGNACIÓN EXTERNA
+    // ==========================================
+    private void CargarYAsignarDatosExternos()
+    {
+        // Limpiamos listas por seguridad
+        jugadores.Clear();
+        enemigos.Clear();
+        ordenDeTurnos.Clear();
+
+        // -------------------------------------------------------------
+        // A. CARGAR LOS 4 JUGADORES DESDE EL PlayerManager REAL
+        // -------------------------------------------------------------
+        var equipoDelJugadorExterno = PlayerManager.Instance.ObtenerEquipoActual(); 
+
+        foreach (var datosExternos in equipoDelJugadorExterno)
+        {
+            Combatiente heroe = new Combatiente
+            {
+                nombre = datosExternos.Nombre,
+                esJugador = true,
+                stats = new Estadisticas
+                {
+                    hpMax = datosExternos.HpMax,
+                    hpActual = datosExternos.HpActual,
+                    pmMax = datosExternos.PmMax,
+                    pmActual = datosExternos.PmActual,
+                    ataqueFisico = datosExternos.AtaqueFisico,
+                    defensaFisica = datosExternos.DefensaFisica,
+                    ataqueMagico = datosExternos.AtaqueMagico,
+                    defensaMagica = datosExternos.DefensaMagica,
+                    velocidad = datosExternos.Velocidad,
+                    evasion = datosExternos.Evasion,
+                    ratioCritico = datosExternos.RatioCritico,
+                    resistenciasEstados = new Dictionary<string, float>(datosExternos.ResistenciasEstados)
+                }
+            };
+            jugadores.Add(heroe);
+        }
+
+        // -------------------------------------------------------------
+        // B. CARGAR LOS ENEMIGOS DESDE SpawnManager + EnemyManager REALES
+        // -------------------------------------------------------------
+        string[] idsEnemigosSala = SpawnManager.Instance.ObtenerIDsEnemigosSala();
+
+        foreach (string idEnemigo in idsEnemigosSala)
+        {
+            var datosBaseEnemigo = EnemyManager.Instance.ObtenerEstadisticasBase(idEnemigo);
+
+            Combatiente monstruo = new Combatiente
+            {
+                nombre = datosBaseEnemigo.Nombre,
+                esJugador = false,
+                stats = new Estadisticas
+                {
+                    hpMax = datosBaseEnemigo.HpMax,
+                    hpActual = datosBaseEnemigo.HpMax, // Nacen con HP al máximo
+                    pmMax = datosBaseEnemigo.PmMax,
+                    pmActual = datosBaseEnemigo.PmMax,
+                    ataqueFisico = datosBaseEnemigo.AtaqueFisico,
+                    defensaFisica = datosBaseEnemigo.DefensaFisica,
+                    ataqueMagico = datosBaseEnemigo.AtaqueMagico,
+                    defensaMagica = datosBaseEnemigo.DefensaMagica,
+                    velocidad = datosBaseEnemigo.Velocidad,
+                    evasion = datosBaseEnemigo.Evasion,
+                    ratioCritico = datosBaseEnemigo.RatioCritico,
+                    resistenciasEstados = new Dictionary<string, float>(datosBaseEnemigo.ResistenciasEstados)
+                }
+            };
+            enemigos.Add(monstruo);
+        }
+
+        // -------------------------------------------------------------
+        // C. CALCULAR INICIATIVA (Unir listas y ordenar por Velocidad)
+        // -------------------------------------------------------------
+        ordenDeTurnos.AddRange(jugadores);
+        ordenDeTurnos.AddRange(enemigos);
+        ordenDeTurnos.Sort((a, b) => b.stats.velocidad.CompareTo(a.stats.velocidad));
+
+        GD.Print($"[BattleManager] ¡Datos externos cargados con éxito! {jugadores.Count} jugadores y {enemigos.Count} enemigos listos.");
+        GD.Print($"[BattleManager] El primero en actuar es: {ordenDeTurnos[0].nombre} con velocidad {ordenDeTurnos[0].stats.velocidad}");
+    }
+
+    // ==========================================
+    // 4. LÓGICA DE BUFF GLOBAL POR PARRY EXITOSO
+    // ==========================================
+    private void OtorgarBuffPorParry(Combatiente personajeQueHizoParry)
+    {
+        string tipoBuffAAsignar = "";
+        float valorBuff = 0.25f; // 25% de mejora global
+
+        // Dependiendo del rol del personaje que hizo el parry, otorga un beneficio al equipo
+        switch (personajeQueHizoParry.nombre)
+        {
+            case "Pistolero":
+                tipoBuffAAsignar = "CRITICO";
+                break;
+            case "Paladín":
+                tipoBuffAAsignar = "DEFENSA_FISICA";
+                break;
+            case "Mago":
+                tipoBuffAAsignar = "DEFENSA_MAGICA";
+                break;
+            case "Curadora":
+                tipoBuffAAsignar = "EVASION";
+                break;
+            default:
+                tipoBuffAAsignar = "CRITICO";
+                break;
+        }
+
+        // Se le aplica o refresca a 3 turnos a TODOS los miembros del equipo globalmente
+        foreach (var jugador in jugadores)
+        {
+            jugador.AplicarBuff(new Buff(tipoBuffAAsignar, valorBuff, 3));
+        }
+
+        GD.Print($"🛡️ ¡PARRY EXITOSO de {personajeQueHizoParry.nombre}! Buff global de [{tipoBuffAAsignar}] activado para todo el equipo.");
+    }
+// ==========================================
+    // 5. FASE DE INICIO DE TURNO (Buffs y Estados)
+    // ==========================================
+    private void ProcesarInicioTurno(Combatiente combatienteActual)
+    {
+        GD.Print($"\n----------------------------------------");
+        GD.Print($"▶️ INICIO DE TURNO: {combatienteActual.nombre}");
+
+        // 1. Descontar turnos de los buffs activos (usando el método que ya vive en Combatiente)
+        combatienteActual.DecrementarTurnosBuffs();
+
+        // 2. Procesar estados alterados activos (por ID)
+        if (combatienteActual.estadoActualID != "00")
+        {
+            combatienteActual.turnosEstadoRestantes--;
+            GD.Print($"⚠️ [{combatienteActual.nombre}] Padece estado ID [{combatienteActual.estadoActualID}]. Quedan {combatienteActual.turnosEstadoRestantes} turnos.");
+
+            // Lógica específica según el ID del estado (Ejemplo: ID "01" = Sueño)
+            if (combatienteActual.estadoActualID == "01")
+            {
+                GD.Print($"💤 [{combatienteActual.nombre}] está dormido y pierde su turno.");
+                // Aquí más adelante puedes saltar la acción de este personaje
+            }
+
+            // Si el estado se agota, regresa al estado normal ("00")
+            if (combatienteActual.turnosEstadoRestantes <= 0)
+            {
+                combatienteActual.estadoActualID = "00";
+                GD.Print($"✨ [{combatienteActual.nombre}] se ha recuperado de su estado alterado y vuelve a la normalidad.");
+            }
+        }
+    }
+}
